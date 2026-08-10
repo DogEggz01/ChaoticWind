@@ -17,10 +17,6 @@
   - Before distance 4000, it will behave same as vanilla.
 - Open ocean + Storm bonus cap: Vanilla default at 20, means Open Ocean bonus + storm wind will generate maximum 20 knots of speed as bonus.
 
-**Recommand mod **
-- https://discord.com/channels/898258030783791164/1518016685716803676 for maximum fun.
-- https://discord.com/channels/898258030783791164/1397386527855611935 for readable weathervane under extreme condition. (Although it might be meaningless at that point)
-
 **Compatibility**
 - Climate
   - When Custom wind on: Direction Chaos, Lerpspeed and Timer still work. Tradewind toggle, Open ocean bonus and cap will be disable.
