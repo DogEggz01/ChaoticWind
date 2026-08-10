@@ -24,6 +24,4 @@
   - Trade wind disable option will overide border expander's trade wind, so it could be toggle on/off. Direction Chaos will apply to synthetic latitude regions.
 
 
-GIF attached is setting all value to extreme(shortest timer, biggest Direction chaos and larpspeed)
-
 This mod doesn't modify base wind magitude, gust modifier and storm 
