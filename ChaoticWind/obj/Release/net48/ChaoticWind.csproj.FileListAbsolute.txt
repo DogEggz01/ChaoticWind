@@ -1,9 +1,0 @@
-C:\Users\Pete\Desktop\sailwindmod\ChaoticWind\bin\Release\net48\ChaoticWind.dll
-C:\Users\Pete\Desktop\sailwindmod\ChaoticWind\bin\Release\net48\ChaoticWind.pdb
-C:\Users\Pete\Desktop\sailwindmod\ChaoticWind\obj\Release\net48\ChaoticWind.csproj.AssemblyReference.cache
-C:\Users\Pete\Desktop\sailwindmod\ChaoticWind\obj\Release\net48\ChaoticWind.GeneratedMSBuildEditorConfig.editorconfig
-C:\Users\Pete\Desktop\sailwindmod\ChaoticWind\obj\Release\net48\ChaoticWind.AssemblyInfoInputs.cache
-C:\Users\Pete\Desktop\sailwindmod\ChaoticWind\obj\Release\net48\ChaoticWind.AssemblyInfo.cs
-C:\Users\Pete\Desktop\sailwindmod\ChaoticWind\obj\Release\net48\ChaoticWind.csproj.CoreCompileInputs.cache
-C:\Users\Pete\Desktop\sailwindmod\ChaoticWind\obj\Release\net48\ChaoticWind.dll
-C:\Users\Pete\Desktop\sailwindmod\ChaoticWind\obj\Release\net48\ChaoticWind.pdb
