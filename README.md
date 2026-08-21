@@ -9,7 +9,7 @@
 **Value explained**
 - Direction Chaos: Bigger means wind direction could change more drastically.
 - Lerpspeed : Bigger means wind change speed faster. Game calculate gust at 0.5 sec timer, so if this value is high you will experience very abrupt and unstable wind speed change. Will also change how fast the wind settle in new direction.
-  - Lerpspeed slider is disabled as default. You need to toggle it on before using it.
+  - Lerpspeed slider is disabled by default. You need to toggle it on before using it.
 - Timer: Number you set will be average timer (unit is second). Actual timer range from 0.5x of the value to 2x of the value to set. For example a minimal value of 2 means wind change every 1~4 second. 
   - New timer will be applied after current timer is done, so you might need to wait for a while.
 - if wind stuck after changing value, restart will usually fix it.
