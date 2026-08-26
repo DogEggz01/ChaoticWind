@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
-using System.Reflection.Emit;
 using BepInEx;
 using BepInEx.Bootstrap;
 using BepInEx.Configuration;
@@ -17,13 +16,47 @@ namespace ChaoticWind
         public int? Order;
     }
 
+    internal sealed class SteppedAcceptableValueRange : AcceptableValueRange<float>
+    {
+        private readonly float step;
+
+        internal SteppedAcceptableValueRange(float minimum, float maximum, float step)
+            : base(minimum, maximum)
+        {
+            this.step = step;
+        }
+
+        public override object Clamp(object value)
+        {
+            float clamped = (float)base.Clamp(value);
+            float snapped = MinValue +
+                Mathf.Floor((clamped - MinValue) / step + 0.5f) * step;
+            return Mathf.Clamp(snapped, MinValue, MaxValue);
+        }
+
+        public override bool IsValid(object value)
+        {
+            if (!(value is float floatValue))
+            {
+                return false;
+            }
+
+            float snapped = (float)Clamp(floatValue);
+            return Mathf.Approximately(floatValue, snapped);
+        }
+    }
+
     [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
     [BepInDependency(BorderExpanderGuid, BepInDependency.DependencyFlags.SoftDependency)]
+    [BepInDependency(ClimatePluginGuid, BepInDependency.DependencyFlags.SoftDependency)]
     public sealed class ChaoticWindPlugin : BaseUnityPlugin
     {
+        private static readonly FieldInfo RegionBlenderTargetRegionField =
+            AccessTools.Field(typeof(RegionBlender), "currentTargetRegion");
+
         public const string PluginGuid = "com.pete.sailwind.windconfigurator";
         public const string PluginName = "Chaotic Wind";
-        public const string PluginVersion = "1.2.0";
+        public const string PluginVersion = "1.3.3";
         public const string BorderExpanderGuid = "com.nandbrew.borderexpander";
         public const string ClimatePluginGuid = "com.raddude.climate";
 
@@ -35,6 +68,7 @@ namespace ChaoticWind
         private const float DefaultWindChangeTimer = 40f;
         private const float DefaultFinalLerpSpeed = 0.5f;
         private const float DefaultCombinedBonusCap = 20f;
+        private const int DefaultStormRelocationDistance = 44000;
 
         private ConfigEntry<float> alAnkhDirectionChaos;
         private ConfigEntry<float> emeraldDirectionChaos;
@@ -46,9 +80,14 @@ namespace ChaoticWind
         private ConfigEntry<float> finalLerpSpeed;
         private ConfigEntry<bool> additionalOceanScaling;
         private ConfigEntry<float> combinedBonusCap;
+        private ConfigEntry<bool> squallsEnabled;
+        private ConfigEntry<bool> hurricaneEnabled;
+        private ConfigEntry<bool> generalStormChangesEnabled;
+        private ConfigEntry<int> stormRelocationDistance;
 
         private Harmony harmony;
         private Wind trackedWind;
+        private float capturedWindChangeTimer;
         private float capturedFinalLerpSpeed;
         private bool hasCapturedFinalLerpSpeed;
         private bool finalLerpOverrideApplied;
@@ -57,16 +96,52 @@ namespace ChaoticWind
         private bool hasCapturedTradeWindDefaults;
 
         public static ChaoticWindPlugin Instance { get; private set; }
-        public ConfigEntry<bool> DisableTradeWind { get; private set; }
+        public ConfigEntry<bool> EnableTradeWind { get; private set; }
+
+        public bool TradeWindEnabled
+        {
+            get { return EnableTradeWind == null || EnableTradeWind.Value; }
+        }
 
         public bool TradeWindDisabled
         {
-            get { return DisableTradeWind != null && DisableTradeWind.Value; }
+            get { return !TradeWindEnabled; }
         }
 
         public bool TradeWindOverrideActive
         {
             get { return TradeWindDisabled && !ClimateCustomWindsActive(); }
+        }
+
+        internal bool SquallsEnabled
+        {
+            get { return squallsEnabled != null && squallsEnabled.Value; }
+        }
+
+        internal bool HurricaneEnabled
+        {
+            get { return hurricaneEnabled != null && hurricaneEnabled.Value; }
+        }
+
+        internal bool AnyCustomStormsEnabled
+        {
+            get { return SquallsEnabled || HurricaneEnabled; }
+        }
+
+        internal bool GeneralStormChangesEnabled
+        {
+            get
+            {
+                return generalStormChangesEnabled != null &&
+                    generalStormChangesEnabled.Value;
+            }
+        }
+
+        internal bool IsCustomStormEnabled(ModStormKind kind)
+        {
+            return kind == ModStormKind.Squall
+                ? SquallsEnabled
+                : HurricaneEnabled;
         }
 
         private void Awake()
@@ -77,6 +152,7 @@ namespace ChaoticWind
 
             harmony = new Harmony(PluginGuid);
             harmony.PatchAll(Assembly.GetExecutingAssembly());
+            ClimateCompatibility.Install(harmony);
 
             ApplyRuntimeSettings();
             Logger.LogInfo($"{PluginName} {PluginVersion} loaded.");
@@ -86,9 +162,18 @@ namespace ChaoticWind
         {
             UnsubscribeFromConfiguration();
 
-            if (trackedWind != null && finalLerpOverrideApplied && hasCapturedFinalLerpSpeed)
+            WindOverrideState.RestoreImmediately();
+            MediEastStormSetting.Apply(false);
+            ModStormFactory.Shutdown();
+            HurricanePersistence.Reset();
+
+            if (trackedWind != null)
             {
-                trackedWind.finalLerpSpeed = capturedFinalLerpSpeed;
+                trackedWind.changeTimer = capturedWindChangeTimer;
+                if (finalLerpOverrideApplied && hasCapturedFinalLerpSpeed)
+                {
+                    trackedWind.finalLerpSpeed = capturedFinalLerpSpeed;
+                }
             }
 
             harmony?.UnpatchSelf();
@@ -101,11 +186,11 @@ namespace ChaoticWind
 
         private void BindConfiguration()
         {
-            DisableTradeWind = Config.Bind(
+            EnableTradeWind = Config.Bind(
                 "Trade Wind",
-                "Disable Trade Wind",
+                "Enable Trade Wind",
                 true,
-                "When enabled, Wind.GetCurrentTradeWind returns Vector3.zero.");
+                "Keep vanilla trade winds enabled. Turn this off to disable trade winds. Ignored while Climate Custom Winds is enabled.");
 
             alAnkhDirectionChaos = BindDirectionChaos(
                 "AlAnkh",
@@ -143,14 +228,15 @@ namespace ChaoticWind
                 DefaultWindChangeTimer,
                 2f,
                 900f,
-                "There is a random range for time from half the setting value to double the setting value. Setting value higher than 600sec(10min) is recommended if you go crazy on Direction Chaos setting.",
+                1f,
+                "Adjusts in increments of 1 second. There is a random range for time from half the setting value to double the setting value. Setting value higher than 600sec(10min) is recommended if you go crazy on Direction Chaos setting.",
                 10);
 
             overrideFinalLerpSpeed = Config.Bind(
                 "Wind Smoothing",
                 "Override Final Lerp Speed",
                 false,
-                "Enable the Final Lerp Speed slider override. When disabled, the original game value remains in use.");
+                "Enable the Final Lerp Speed slider override outside storms. When disabled, the original game value remains in use outside storms. General Storm Changes always uses its authoritative value while inside a storm.");
 
             finalLerpSpeed = BindSlider(
                 "Wind Smoothing",
@@ -158,7 +244,8 @@ namespace ChaoticWind
                 DefaultFinalLerpSpeed,
                 0.1f,
                 60f,
-                "This value changes how fast wind speed changes. At 60 it will instantly change to the new wind speed at 60 FPS. USE AT YOUR OWN RISK.",
+                0.01f,
+                "Adjusts in increments of 0.01. This value changes how fast wind speed changes outside storms. General Storm Changes has authority while inside a storm and uses 1.0 instead. At 60 this setting instantly changes wind speed at 60 FPS. USE AT YOUR OWN RISK.",
                 10);
 
             additionalOceanScaling = Config.Bind(
@@ -173,7 +260,35 @@ namespace ChaoticWind
                 DefaultCombinedBonusCap,
                 0f,
                 100f,
-                "Maximum combined storm and ocean wind bonus. Original game value is 20. Ignored while Climate Custom Winds is enabled.",
+                1f,
+                "Adjusts in increments of 1. Maximum combined storm and ocean wind bonus. Original game value is 20. Also overrides Climate Custom Winds.",
+                10);
+
+            generalStormChangesEnabled = Config.Bind(
+                "Storms",
+                "Enable General Storm Changes",
+                true,
+                "Enable normalized storm selection, radius-based storm bonus calculation, and custom wind and gust behavior while inside any storm. Storm gusts use a fixed 10-second interval and wind lerp speed 1.0. This setting does not enable custom storms or change Medi East storm count.");
+
+            squallsEnabled = Config.Bind(
+                "Storms",
+                "Enable Squalls",
+                true,
+                "Enable all three Squalls and all Squall-specific mechanics, including movement, relocation, particles, thunder, and transitional rain that reaches intensity 50. Enabling this sets Medi East storm count to 3.");
+
+            hurricaneEnabled = Config.Bind(
+                "Storms",
+                "Enable Hurricane",
+                true,
+                "Enable the Hurricane and all Hurricane-specific mechanics, including movement, relocation, particles, thunder, persistence, and transitional rain that reaches intensity 15. Enabling this sets Medi East storm count to 3.");
+
+            stormRelocationDistance = BindIntegerSlider(
+                "Storms",
+                "Storm Relocation Distance",
+                DefaultStormRelocationDistance,
+                18000,
+                90000,
+                "Distance at which custom storms are shifted past the player. Vanilla default is 44000. Adjusts in increments of 1.",
                 10);
         }
 
@@ -185,7 +300,8 @@ namespace ChaoticWind
                 defaultValue,
                 0.01f,
                 1f,
-                "Direction chaos for " + displayName + ".",
+                0.01f,
+                "Direction chaos for " + displayName + ". Adjusts in increments of 0.01.",
                 order,
                 displayName);
         }
@@ -196,6 +312,7 @@ namespace ChaoticWind
             float defaultValue,
             float minimum,
             float maximum,
+            float step,
             string description,
             int order,
             string displayName = null)
@@ -213,7 +330,32 @@ namespace ChaoticWind
                 defaultValue,
                 new ConfigDescription(
                     description,
-                    new AcceptableValueRange<float>(minimum, maximum),
+                    new SteppedAcceptableValueRange(minimum, maximum, step),
+                    metadata));
+        }
+
+        private ConfigEntry<int> BindIntegerSlider(
+            string section,
+            string key,
+            int defaultValue,
+            int minimum,
+            int maximum,
+            string description,
+            int order)
+        {
+            ConfigurationManagerMetadata metadata = new ConfigurationManagerMetadata
+            {
+                ShowRangeAsPercent = false,
+                Order = order
+            };
+
+            return Config.Bind(
+                section,
+                key,
+                defaultValue,
+                new ConfigDescription(
+                    description,
+                    new AcceptableValueRange<int>(minimum, maximum),
                     metadata));
         }
 
@@ -225,10 +367,14 @@ namespace ChaoticWind
             aestrinDirectionChaos.SettingChanged += OnRegionSettingChanged;
             chronosDirectionChaos.SettingChanged += OnRegionSettingChanged;
 
-            DisableTradeWind.SettingChanged += OnWindSettingChanged;
+            EnableTradeWind.SettingChanged += OnWindSettingChanged;
             windChangeTimer.SettingChanged += OnWindSettingChanged;
             overrideFinalLerpSpeed.SettingChanged += OnWindSettingChanged;
             finalLerpSpeed.SettingChanged += OnWindSettingChanged;
+            squallsEnabled.SettingChanged += OnCustomStormSettingChanged;
+            hurricaneEnabled.SettingChanged += OnCustomStormSettingChanged;
+            generalStormChangesEnabled.SettingChanged +=
+                OnGeneralStormChangesSettingChanged;
         }
 
         private void UnsubscribeFromConfiguration()
@@ -239,20 +385,51 @@ namespace ChaoticWind
             aestrinDirectionChaos.SettingChanged -= OnRegionSettingChanged;
             chronosDirectionChaos.SettingChanged -= OnRegionSettingChanged;
 
-            DisableTradeWind.SettingChanged -= OnWindSettingChanged;
+            EnableTradeWind.SettingChanged -= OnWindSettingChanged;
             windChangeTimer.SettingChanged -= OnWindSettingChanged;
             overrideFinalLerpSpeed.SettingChanged -= OnWindSettingChanged;
             finalLerpSpeed.SettingChanged -= OnWindSettingChanged;
+            squallsEnabled.SettingChanged -= OnCustomStormSettingChanged;
+            hurricaneEnabled.SettingChanged -= OnCustomStormSettingChanged;
+            generalStormChangesEnabled.SettingChanged -=
+                OnGeneralStormChangesSettingChanged;
         }
 
         private void OnRegionSettingChanged(object sender, EventArgs e)
         {
-            ApplyRuntimeSettings();
+            ApplyRegionSettings();
+            ApplyActiveRegionChaos();
         }
 
         private void OnWindSettingChanged(object sender, EventArgs e)
         {
-            ApplyRuntimeSettings();
+            TrackAndApplyWind(Wind.instance);
+        }
+
+        private void OnCustomStormSettingChanged(object sender, EventArgs e)
+        {
+            ModStormFactory.ApplyEnabledState();
+            MediEastStormSetting.Apply(AnyCustomStormsEnabled);
+            RefreshCurrentStorm();
+        }
+
+        private void OnGeneralStormChangesSettingChanged(object sender, EventArgs e)
+        {
+            WindOverrideState.OnGeneralChangesToggle(GeneralStormChangesEnabled);
+            RefreshCurrentStorm();
+        }
+
+        private static void RefreshCurrentStorm()
+        {
+            if (GameState.playing && WeatherStorms.instance != null)
+            {
+                WeatherStorms.instance.FindClosestStorm();
+            }
+        }
+
+        private void Update()
+        {
+            WindOverrideState.Tick();
         }
 
         private void ApplyRuntimeSettings()
@@ -296,8 +473,8 @@ namespace ChaoticWind
                 return null;
             }
 
-            FieldInfo field = AccessTools.Field(typeof(RegionBlender), "currentTargetRegion");
-            return field?.GetValue(RegionBlender.instance) as Region;
+            return RegionBlenderTargetRegionField?.GetValue(
+                RegionBlender.instance) as Region;
         }
 
         private bool TryGetChaosForRegion(Region region, out float chaos)
@@ -349,6 +526,7 @@ namespace ChaoticWind
             if (trackedWind != wind)
             {
                 trackedWind = wind;
+                capturedWindChangeTimer = wind.changeTimer;
                 capturedFinalLerpSpeed = wind.finalLerpSpeed;
                 hasCapturedFinalLerpSpeed = true;
                 finalLerpOverrideApplied = false;
@@ -369,6 +547,45 @@ namespace ChaoticWind
                 wind.finalLerpSpeed = capturedFinalLerpSpeed;
                 finalLerpOverrideApplied = false;
             }
+
+            WindOverrideState.EnforceFinalLerpAuthority(wind);
+        }
+
+        internal float GetConfiguredWindChangeTimer()
+        {
+            return windChangeTimer.Value;
+        }
+
+        internal float GetConfiguredFinalLerpSpeed(float fallback)
+        {
+            if (overrideFinalLerpSpeed.Value)
+            {
+                return finalLerpSpeed.Value;
+            }
+
+            return hasCapturedFinalLerpSpeed ? capturedFinalLerpSpeed : fallback;
+        }
+
+        internal static float GetConfiguredStormRelocationDistance()
+        {
+            return Instance == null
+                ? DefaultStormRelocationDistance
+                : Instance.stormRelocationDistance.Value;
+        }
+
+        internal void LogFeatureInfo(string message)
+        {
+            Logger.LogInfo(message);
+        }
+
+        internal void LogFeatureWarning(string message)
+        {
+            Logger.LogWarning(message);
+        }
+
+        internal void LogFeatureError(string message)
+        {
+            Logger.LogError(message);
         }
 
         public void EnforceTradeWindOverride(Wind wind, ref Vector3 result)
@@ -478,73 +695,11 @@ namespace ChaoticWind
         }
 
         [HarmonyTranspiler]
+        [HarmonyPriority(Priority.Last)]
         private static IEnumerable<CodeInstruction> Transpiler(
             IEnumerable<CodeInstruction> instructions)
         {
-            List<CodeInstruction> code = new List<CodeInstruction>(instructions);
-
-            MethodInfo inverseLerp = AccessTools.Method(
-                typeof(Mathf),
-                nameof(Mathf.InverseLerp),
-                new[] { typeof(float), typeof(float), typeof(float) });
-            FieldInfo distanceToLand = AccessTools.Field(
-                typeof(GameState),
-                nameof(GameState.distanceToLand));
-            MethodInfo oceanHelper = AccessTools.Method(
-                typeof(ChaoticWindPlugin),
-                nameof(ChaoticWindPlugin.GetConfiguredOceanLerp));
-            MethodInfo capHelper = AccessTools.Method(
-                typeof(ChaoticWindPlugin),
-                nameof(ChaoticWindPlugin.GetConfiguredBonusCap));
-
-            int oceanCallIndex = -1;
-            List<int> capIndexes = new List<int>();
-
-            for (int i = 0; i < code.Count; i++)
-            {
-                if (i >= 3 &&
-                    Equals(code[i].operand, inverseLerp) &&
-                    LoadsFloat(code[i - 3], 1500f) &&
-                    LoadsFloat(code[i - 2], 4000f) &&
-                    code[i - 1].opcode == OpCodes.Ldsfld &&
-                    Equals(code[i - 1].operand, distanceToLand))
-                {
-                    oceanCallIndex = i;
-                }
-
-                if (LoadsFloat(code[i], 20f))
-                {
-                    capIndexes.Add(i);
-                }
-            }
-
-            if (oceanCallIndex < 0 || capIndexes.Count != 2)
-            {
-                Debug.LogError(
-                    "[Chaotic Wind] Vanilla ocean wind patch pattern was not found.");
-                return code;
-            }
-
-            code[oceanCallIndex].operand = oceanHelper;
-
-            for (int i = 0; i < capIndexes.Count; i++)
-            {
-                int index = capIndexes[i];
-                CodeInstruction original = code[index];
-                CodeInstruction replacement = new CodeInstruction(OpCodes.Call, capHelper);
-                replacement.labels.AddRange(original.labels);
-                replacement.blocks.AddRange(original.blocks);
-                code[index] = replacement;
-            }
-
-            return code;
-        }
-
-        private static bool LoadsFloat(CodeInstruction instruction, float value)
-        {
-            return instruction.opcode == OpCodes.Ldc_R4 &&
-                   instruction.operand is float loadedValue &&
-                   loadedValue == value;
+            return StormWindIlRewriter.RewriteVanilla(instructions);
         }
     }
 
@@ -557,6 +712,8 @@ namespace ChaoticWind
         {
             ChaoticWindPlugin.Instance?.ApplyRegionSettings();
             ChaoticWindPlugin.Instance?.ApplyActiveRegionChaos();
+            MediEastStormSetting.Apply(
+                ChaoticWindPlugin.Instance?.AnyCustomStormsEnabled == true);
         }
     }
 }

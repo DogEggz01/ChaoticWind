@@ -3,7 +3,7 @@
     <TargetFramework>net48</TargetFramework>
     <AssemblyName>ChaoticWind</AssemblyName>
     <RootNamespace>ChaoticWind</RootNamespace>
-    <Version>1.2.0</Version>
+    <Version>1.3.3</Version>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <ImplicitUsings>false</ImplicitUsings>
@@ -29,6 +29,18 @@
     </Reference>
     <Reference Include="UnityEngine.CoreModule">
       <HintPath>..\Sailwind\Sailwind_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AudioModule">
+      <HintPath>..\Sailwind\Sailwind_Data\Managed\UnityEngine.AudioModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ParticleSystemModule">
+      <HintPath>..\Sailwind\Sailwind_Data\Managed\UnityEngine.ParticleSystemModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.JSONSerializeModule">
+      <HintPath>..\Sailwind\Sailwind_Data\Managed\UnityEngine.JSONSerializeModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
