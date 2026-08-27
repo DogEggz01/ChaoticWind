@@ -6,6 +6,7 @@
 - Make open ocean bonus keep scaling with distance (Default off, could be toggle on)
 - Add slider to control Open ocean + Storm bonus cap.
 - Add Squall and Hurricane as custom storm, and revise storm wind behavior. Can be toggle off seperately.
+
 **Custom Storm**
 - Add 3 squalls of different wind strength. Squall cover small area(like GRC size), move fast and have very strong rain. Wind inside squall will change faster, both direction and magnitude.
   - Squall can appear in all region.
