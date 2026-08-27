@@ -14,6 +14,7 @@
 - Add 1 Sandstorm. Smaller core storm area, Low visibility, no rain, same wind as vanilla storm. Your boat wil get dirty faster.
   - SandStorm only appear in Al'Ankh
 - Add 1 Dry thunder storm. Same core storm area as vanilla, no rain, a lot of thunder, strong wind.
+  - Dry Thunder Storm only appear in Aestrin, Chronos.
 - Revise storm wind behavior
   - Now Storm bonus will start when you enter storm affect radius instead of fixed distance.
   - Maximum storm bonus wind will be reach much eariler than vanilla. (In vanilla you will need to be within 0.05 degree from storm center to receive max wind bonus)
