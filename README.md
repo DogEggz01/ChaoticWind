@@ -11,6 +11,9 @@
   - Squall can appear in all region.
 - Add 1 hurricane storm. Double the core storm area. Provide maximum 34 knots wind bonus. Have stronger than vanilla rain. Move slower.
   - Hurricane can only appear in Chronos, Emerald, Fire Fish lagoon region.
+- Add 1 Sandstorm. Smaller core storm area, Low visibility, no rain, same wind as vanilla storm. Your boat wil get dirty faster.
+  - SandStorm only appear in Al'Ankh
+- Add 1 Dry thunder storm. Same core storm area as vanilla, no rain, a lot of thunder, strong wind.
 - Revise storm wind behavior
   - Now Storm bonus will start when you enter storm affect radius instead of fixed distance.
   - Maximum storm bonus wind will be reach much eariler than vanilla. (In vanilla you will need to be within 0.05 degree from storm center to receive max wind bonus)
