@@ -1,7 +1,7 @@
 *Disclaimer: This mod is made with ChatGPT 5.6 Sol*
 
 **Main feature**
-- Disable trade wind (could be toggle)
+- Trade wind could be toggle off.
 - Add slider to control wind direction change magnitude, wind change timer and wind speed changing speed.
 - Make open ocean bonus keep scaling with distance (Default off, could be toggle on)
 - Add slider to control Open ocean + Storm bonus cap.
