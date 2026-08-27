@@ -1,13 +1,12 @@
 *Disclaimer: This mod is made with ChatGPT 5.6 Sol*
 
-**Main feature**
+## Main feature
 - Trade wind could be toggle off.
 - Add slider to control wind direction change magnitude, wind change timer and wind speed changing speed.
 - Make open ocean bonus keep scaling with distance (Default off, could be toggle on)
 - Add slider to control Open ocean + Storm bonus cap.
 - Add Squall and Hurricane as custom storm, and revise storm wind behavior. Can be toggle off seperately.
-
-**Custom Storm**
+## Custom Storm
 - Add 3 squalls of different wind strength. Squall cover small area(like GRC size), move fast and have very strong rain. Wind inside squall will change faster, both direction and magnitude.
   - Squall can appear in all region.
 - Add 1 hurricane storm. Double the core storm area. Provide maximum 34 knots wind bonus. Have stronger than vanilla rain. Move slower.
@@ -17,7 +16,7 @@
   - Maximum storm bonus wind will be reach much eariler than vanilla. (In vanilla you will need to be within 0.05 degree from storm center to receive max wind bonus)
   - When in storm affect radius, lerp speed set to 1(so wind reach target speed and direction faster), gust always atleast provide 1x bonus, and gust change timer become 10 sec(so each gust will last longer).
   - When multiple storm present, the stronger one will take effect.
-**Value explained**
+## Setting Value explained
 - Direction Chaos: Bigger means wind direction could change more drastically.
 - Lerpspeed : Bigger means wind change speed faster. Game calculate gust at 0.5 sec timer, so if this value is high you will experience very abrupt and unstable wind speed change. Will also change how fast the wind settle in new direction.
   - Lerpspeed slider is disabled by default. You need to toggle it on before using it.
@@ -28,8 +27,7 @@
   - Before distance 4000, it will behave same as vanilla.
 - Open ocean + Storm bonus cap: Vanilla default at 20, means Open Ocean bonus + storm wind will generate maximum 20 knots of speed as bonus.
 - Storm relocate distance: Storm will relocate to another position after passing this set distance. Reduce it to increase the chance you met storm.
-
-**Compatibility**
+## Compatibility
 - Climate
   - When Custom wind on: Direction Chaos, Lerpspeed, Timer, Open ocean bonus and cap still work. Tradewind toggle will be disable. Custom storm behavior will be present even when climate custom wind is on.
 - BorderExpander
