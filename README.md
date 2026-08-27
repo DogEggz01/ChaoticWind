@@ -26,7 +26,7 @@
 - Open Ocean Bonus: Vanilla game stop scaling at 4000 distance from land, 0.66x base wind as bonus wind. After enable the option it would scale upto 72000 (8 degree), at 1.52x base wind as bonus.
   - Before distance 4000, it will behave same as vanilla.
 - Open ocean + Storm bonus cap: Vanilla default at 20, means Open Ocean bonus + storm wind will generate maximum 20 knots of speed as bonus.
-- Storm relocate distance: Storm will relocate to another position after passing this set distance. Reduce it to increase the chance you met storm.
+- Storm relocate distance: Storm will relocate to another position after passing this set distance (distance between storm and player). Reduce it to increase the chance you met storm.
 ## Compatibility
 - Climate
   - When Custom wind on: Direction Chaos, Lerpspeed, Timer, Open ocean bonus and cap still work. Tradewind toggle will be disable. Custom storm behavior will be present even when climate custom wind is on.
