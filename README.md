@@ -2,8 +2,11 @@
 
 **Custom Storm have moved to another independent mod**
 
+
 For people that don't want Simple Trade wind cycle: Install **1.3.4**
+
 For people want Trade wind Cycle but only AA/EA wind cycle: Install **1.4.0**
+
 For people want all trade wind cycle: Install **1.4.1**
 
 ## Main feature
