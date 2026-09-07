@@ -12,28 +12,55 @@ namespace ChaoticWind
             new Vector3(0.75f, 0f, 0.75f).normalized;
         private static readonly Vector3 SouthWest =
             new Vector3(-1f, 0f, -0.5f).normalized;
+        private static readonly Vector3 EastNorthEast =
+            new Vector3(1f, 0f, 0.5f).normalized;
+        private static readonly Vector3 EastSouthEast =
+            new Vector3(1f, 0f, -0.5f).normalized;
 
-        internal static Vector3 GetDirection(float absoluteDay)
+        internal static Vector3 GetMidLatitudeDirection(float absoluteDay)
+        {
+            return GetAlternatingDirection(
+                absoluteDay,
+                NorthEast,
+                SouthWest);
+        }
+
+        internal static Vector3 GetNorthernDirection(float absoluteDay)
+        {
+            return GetAlternatingDirection(
+                absoluteDay,
+                EastNorthEast,
+                EastSouthEast);
+        }
+
+        private static Vector3 GetAlternatingDirection(
+            float absoluteDay,
+            Vector3 initialDirection,
+            Vector3 alternateDirection)
         {
             absoluteDay = Mathf.Max(0f, absoluteDay);
 
-            // The initial period is fully NE: days 0 through 19.
+            // The initial direction is dominant from days 0 through 19.
             if (absoluteDay < PhaseLengthDays)
             {
-                return NorthEast;
+                return initialDirection;
             }
 
             int phase = Mathf.FloorToInt(absoluteDay / PhaseLengthDays);
             float dayWithinPhase = absoluteDay - phase * PhaseLengthDays;
-            bool targetIsNorthEast = phase % 2 == 0;
+            bool targetIsInitialDirection = phase % 2 == 0;
 
-            Vector3 target = targetIsNorthEast ? NorthEast : SouthWest;
+            Vector3 target = targetIsInitialDirection
+                ? initialDirection
+                : alternateDirection;
             if (dayWithinPhase >= TransitionLengthDays)
             {
                 return target;
             }
 
-            Vector3 previous = targetIsNorthEast ? SouthWest : NorthEast;
+            Vector3 previous = targetIsInitialDirection
+                ? alternateDirection
+                : initialDirection;
             float transition = Mathf.SmoothStep(
                 0f,
                 1f,

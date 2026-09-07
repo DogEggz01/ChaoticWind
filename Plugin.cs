@@ -60,7 +60,7 @@ namespace ChaoticWind
 
         public const string PluginGuid = "com.pete.sailwind.windconfigurator";
         public const string PluginName = "Chaotic Wind";
-        public const string PluginVersion = "1.4.0";
+        public const string PluginVersion = "1.4.1";
         public const string BorderExpanderGuid = "com.nandbrew.borderexpander";
         public const string ClimatePluginGuid = "com.raddude.climate";
 
@@ -183,9 +183,9 @@ namespace ChaoticWind
             SimpleTradeWindCycle = Config.Bind(
                 "Trade Wind",
                 "Simple Trade wind cycle",
-                true,
+                false,
                 new ConfigDescription(
-                    "Enable 20 days trade wind cycle between Al'Ankh trade wind and Emerald Trade wind. One of them will dominant the latitude between 30N-33N at each cycle",
+                    "Enable 20 days trade wind cycle between Al'Ankh trade wind and Emerald Trade wind. One of them will dominant the latitude between 30N-33N at each cycle. Above 33N, ENE and ESE follow the same 20-day cycle, starting with ENE.",
                     null,
                     new ConfigurationManagerAttributes
                     {
@@ -281,8 +281,7 @@ namespace ChaoticWind
             }
 
             if (!TryGetPlayerLatitude(out float latitude) ||
-                latitude < 30f ||
-                latitude > 33f)
+                latitude < 30f)
             {
                 lastTradeWindRetargetSample = int.MinValue;
                 return;
@@ -601,12 +600,15 @@ namespace ChaoticWind
                 return false;
             }
 
-            if (latitude < 30f || latitude > 33f)
+            if (latitude < 30f)
             {
                 return false;
             }
 
-            result = TradeWindCycle.GetDirection(GetCurrentAbsoluteDay());
+            float absoluteDay = GetCurrentAbsoluteDay();
+            result = latitude > 33f
+                ? TradeWindCycle.GetNorthernDirection(absoluteDay)
+                : TradeWindCycle.GetMidLatitudeDirection(absoluteDay);
             return true;
         }
 
