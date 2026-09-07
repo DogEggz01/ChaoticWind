@@ -55,10 +55,12 @@ namespace ChaoticWind
     {
         private static readonly FieldInfo RegionBlenderTargetRegionField =
             AccessTools.Field(typeof(RegionBlender), "currentTargetRegion");
+        private static readonly MethodInfo WindSetNewGustTargetMethod =
+            AccessTools.Method(typeof(Wind), "SetNewGustTarget");
 
         public const string PluginGuid = "com.pete.sailwind.windconfigurator";
         public const string PluginName = "Chaotic Wind";
-        public const string PluginVersion = "1.3.4";
+        public const string PluginVersion = "1.4.0";
         public const string BorderExpanderGuid = "com.nandbrew.borderexpander";
         public const string ClimatePluginGuid = "com.raddude.climate";
 
@@ -91,9 +93,12 @@ namespace ChaoticWind
         private float capturedTradeWindInfluence;
         private float capturedMinimumMagnitude;
         private bool hasCapturedTradeWindDefaults;
+        private int lastTradeWindRetargetSample = int.MinValue;
+        private bool pendingTradeWindRetarget;
 
         public static ChaoticWindPlugin Instance { get; private set; }
         public ConfigEntry<bool> EnableTradeWind { get; private set; }
+        public ConfigEntry<bool> SimpleTradeWindCycle { get; private set; }
 
         public bool TradeWindEnabled
         {
@@ -103,6 +108,16 @@ namespace ChaoticWind
         public bool TradeWindDisabled
         {
             get { return !TradeWindEnabled; }
+        }
+
+        public bool TradeWindCycleEnabled
+        {
+            get
+            {
+                return TradeWindEnabled &&
+                       (SimpleTradeWindCycle == null ||
+                        SimpleTradeWindCycle.Value);
+            }
         }
 
         public bool TradeWindOverrideActive
@@ -127,6 +142,7 @@ namespace ChaoticWind
         private void OnDestroy()
         {
             UnsubscribeFromConfiguration();
+            pendingTradeWindRetarget = false;
 
             if (trackedWind != null)
             {
@@ -145,13 +161,36 @@ namespace ChaoticWind
             }
         }
 
+        private void Update()
+        {
+            UpdateTradeWindRetargeting();
+        }
+
         private void BindConfiguration()
         {
             EnableTradeWind = Config.Bind(
                 "Trade Wind",
                 "Enable Trade Wind",
                 true,
-                "Keep vanilla trade winds enabled. Turn this off to disable trade winds. Ignored while Climate Custom Winds is enabled.");
+                new ConfigDescription(
+                    "Enable trade winds and allow the optional trade-wind cycle below. Turn this off to disable all trade winds. Ignored while Climate Custom Winds is enabled.",
+                    null,
+                    new ConfigurationManagerAttributes
+                    {
+                        Order = 20
+                    }));
+
+            SimpleTradeWindCycle = Config.Bind(
+                "Trade Wind",
+                "Simple Trade wind cycle",
+                true,
+                new ConfigDescription(
+                    "Enable 20 days trade wind cycle between Al'Ankh trade wind and Emerald Trade wind. One of them will dominant the latitude between 30N-33N at each cycle",
+                    null,
+                    new ConfigurationManagerAttributes
+                    {
+                        Order = 10
+                    }));
 
             alAnkhDirectionChaos = BindDirectionChaos(
                 "AlAnkh",
@@ -226,6 +265,71 @@ namespace ChaoticWind
                 10);
         }
 
+        private void UpdateTradeWindRetargeting()
+        {
+            Wind wind = Wind.instance;
+            if (!GameState.playing || wind == null || Sun.sun == null)
+            {
+                lastTradeWindRetargetSample = int.MinValue;
+                return;
+            }
+
+            if (ClimateCustomWindsActive() || !TradeWindCycleEnabled)
+            {
+                lastTradeWindRetargetSample = int.MinValue;
+                return;
+            }
+
+            if (!TryGetPlayerLatitude(out float latitude) ||
+                latitude < 30f ||
+                latitude > 33f)
+            {
+                lastTradeWindRetargetSample = int.MinValue;
+                return;
+            }
+
+            int sample = TradeWindCycle.GetRetargetSample(
+                GetCurrentAbsoluteDay());
+            if (sample == lastTradeWindRetargetSample)
+            {
+                return;
+            }
+
+            lastTradeWindRetargetSample = sample;
+            RequestTradeWindRetarget();
+        }
+
+        private void RequestTradeWindRetarget()
+        {
+            if (Wind.instance == null)
+            {
+                return;
+            }
+
+            pendingTradeWindRetarget = true;
+            Wind.instance.debugChangeWind = true;
+        }
+
+        internal void CompleteRequestedTradeWindRetarget(Wind wind)
+        {
+            if (!pendingTradeWindRetarget || wind != Wind.instance)
+            {
+                return;
+            }
+
+            pendingTradeWindRetarget = false;
+            try
+            {
+                WindSetNewGustTargetMethod?.Invoke(wind, null);
+            }
+            catch (Exception exception)
+            {
+                LogFeatureError(
+                    "Could not refresh the gust target after a trade-wind transition update: " +
+                    exception);
+            }
+        }
+
         private ConfigEntry<float> BindDirectionChaos(
             string key,
             string displayName,
@@ -281,6 +385,7 @@ namespace ChaoticWind
             chronosDirectionChaos.SettingChanged += OnRegionSettingChanged;
 
             EnableTradeWind.SettingChanged += OnWindSettingChanged;
+            SimpleTradeWindCycle.SettingChanged += OnWindSettingChanged;
             windChangeTimer.SettingChanged += OnWindSettingChanged;
             overrideFinalLerpSpeed.SettingChanged += OnWindSettingChanged;
             finalLerpSpeed.SettingChanged += OnWindSettingChanged;
@@ -295,6 +400,7 @@ namespace ChaoticWind
             chronosDirectionChaos.SettingChanged -= OnRegionSettingChanged;
 
             EnableTradeWind.SettingChanged -= OnWindSettingChanged;
+            SimpleTradeWindCycle.SettingChanged -= OnWindSettingChanged;
             windChangeTimer.SettingChanged -= OnWindSettingChanged;
             overrideFinalLerpSpeed.SettingChanged -= OnWindSettingChanged;
             finalLerpSpeed.SettingChanged -= OnWindSettingChanged;
@@ -308,6 +414,13 @@ namespace ChaoticWind
 
         private void OnWindSettingChanged(object sender, EventArgs e)
         {
+            if ((sender == EnableTradeWind ||
+                 sender == SimpleTradeWindCycle) &&
+                Wind.instance != null)
+            {
+                lastTradeWindRetargetSample = int.MinValue;
+                RequestTradeWindRetarget();
+            }
             TrackAndApplyWind(Wind.instance);
         }
 
@@ -412,6 +525,8 @@ namespace ChaoticWind
 
             if (trackedWind != wind)
             {
+                pendingTradeWindRetarget = false;
+                lastTradeWindRetargetSample = int.MinValue;
                 trackedWind = wind;
                 capturedWindChangeTimer = wind.changeTimer;
                 capturedFinalLerpSpeed = wind.finalLerpSpeed;
@@ -441,6 +556,11 @@ namespace ChaoticWind
             Logger.LogInfo(message);
         }
 
+        internal void LogFeatureWarning(string message)
+        {
+            Logger.LogWarning(message);
+        }
+
         internal void LogFeatureError(string message)
         {
             Logger.LogError(message);
@@ -448,18 +568,79 @@ namespace ChaoticWind
 
         public void EnforceTradeWindOverride(Wind wind, ref Vector3 result)
         {
-            if (!TradeWindOverrideActive)
+            if (TryGetTradeWindOverride(wind, out Vector3 configuredResult))
+            {
+                result = configuredResult;
+            }
+        }
+
+        internal bool TryGetTradeWindOverride(
+            Wind wind,
+            out Vector3 result)
+        {
+            result = Vector3.zero;
+
+            if (ClimateCustomWindsActive())
+            {
+                return false;
+            }
+
+            if (TradeWindDisabled)
+            {
+                RestoreTradeWindFields(wind);
+                return true;
+            }
+
+            if (!TradeWindCycleEnabled)
+            {
+                return false;
+            }
+
+            if (!TryGetPlayerLatitude(out float latitude))
+            {
+                return false;
+            }
+
+            if (latitude < 30f || latitude > 33f)
+            {
+                return false;
+            }
+
+            result = TradeWindCycle.GetDirection(GetCurrentAbsoluteDay());
+            return true;
+        }
+
+        private static bool TryGetPlayerLatitude(out float latitude)
+        {
+            latitude = 0f;
+            if (FloatingOriginManager.instance == null ||
+                Refs.observerMirror == null)
+            {
+                return false;
+            }
+
+            latitude = FloatingOriginManager.instance.GetGlobeCoords(
+                Refs.observerMirror.transform).z;
+            return true;
+        }
+
+        private void RestoreTradeWindFields(Wind wind)
+        {
+            if (!hasCapturedTradeWindDefaults || wind != trackedWind)
             {
                 return;
             }
 
-            result = Vector3.zero;
+            wind.tradeWindInfluence = capturedTradeWindInfluence;
+            wind.minimumMagnitude = capturedMinimumMagnitude;
+        }
 
-            if (hasCapturedTradeWindDefaults && wind == trackedWind)
-            {
-                wind.tradeWindInfluence = capturedTradeWindInfluence;
-                wind.minimumMagnitude = capturedMinimumMagnitude;
-            }
+        private static float GetCurrentAbsoluteDay()
+        {
+            float timeOfDay = Sun.sun != null
+                ? Mathf.Repeat(Sun.sun.globalTime, 24f) / 24f
+                : 0f;
+            return Mathf.Max(0, GameState.day) + timeOfDay;
         }
 
         internal static float GetConfiguredOceanLerp(
@@ -511,15 +692,16 @@ namespace ChaoticWind
         [HarmonyPrefix]
         [HarmonyPriority(Priority.High)]
         [HarmonyBefore(new[] { ChaoticWindPlugin.BorderExpanderGuid })]
-        private static bool Prefix(ref Vector3 __result)
+        private static bool Prefix(Wind __instance, ref Vector3 __result)
         {
             ChaoticWindPlugin plugin = ChaoticWindPlugin.Instance;
-            if (plugin == null || !plugin.TradeWindOverrideActive)
+            if (plugin == null ||
+                !plugin.TryGetTradeWindOverride(__instance, out Vector3 result))
             {
                 return true;
             }
 
-            __result = Vector3.zero;
+            __result = result;
             return false;
         }
 
@@ -550,6 +732,13 @@ namespace ChaoticWind
         private static void Prefix()
         {
             ChaoticWindPlugin.Instance?.ApplyActiveRegionChaos();
+        }
+
+        [HarmonyPostfix]
+        private static void Postfix(Wind __instance)
+        {
+            ChaoticWindPlugin.Instance?.CompleteRequestedTradeWindRetarget(
+                __instance);
         }
 
         [HarmonyTranspiler]
