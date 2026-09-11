@@ -53,6 +53,14 @@ namespace ChaoticWind
     [BepInDependency(ClimatePluginGuid, BepInDependency.DependencyFlags.SoftDependency)]
     public sealed class ChaoticWindPlugin : BaseUnityPlugin
     {
+        private enum SimpleTradeWindArea
+        {
+            None,
+            MidLatitude,
+            UpperMidLatitude,
+            Northern
+        }
+
         private static readonly FieldInfo RegionBlenderTargetRegionField =
             AccessTools.Field(typeof(RegionBlender), "currentTargetRegion");
         private static readonly MethodInfo WindSetNewGustTargetMethod =
@@ -60,7 +68,7 @@ namespace ChaoticWind
 
         public const string PluginGuid = "com.pete.sailwind.windconfigurator";
         public const string PluginName = "Chaotic Wind";
-        public const string PluginVersion = "1.4.1";
+        public const string PluginVersion = "1.4.2";
         public const string BorderExpanderGuid = "com.nandbrew.borderexpander";
         public const string ClimatePluginGuid = "com.raddude.climate";
 
@@ -72,6 +80,10 @@ namespace ChaoticWind
         private const float DefaultWindChangeTimer = 40f;
         private const float DefaultFinalLerpSpeed = 0.5f;
         private const float DefaultCombinedBonusCap = 20f;
+        private const float MidCycleSouthLatitude = 30f;
+        private const float MidCycleCalmLatitude = 32f;
+        private const float MidCycleNorthLatitude = 33f;
+        private const float MidCycleEastLongitudeLimit = 7f;
 
         private ConfigEntry<float> alAnkhDirectionChaos;
         private ConfigEntry<float> emeraldDirectionChaos;
@@ -90,9 +102,6 @@ namespace ChaoticWind
         private float capturedFinalLerpSpeed;
         private bool hasCapturedFinalLerpSpeed;
         private bool finalLerpOverrideApplied;
-        private float capturedTradeWindInfluence;
-        private float capturedMinimumMagnitude;
-        private bool hasCapturedTradeWindDefaults;
         private int lastTradeWindRetargetSample = int.MinValue;
         private bool pendingTradeWindRetarget;
 
@@ -185,7 +194,7 @@ namespace ChaoticWind
                 "Simple Trade wind cycle",
                 false,
                 new ConfigDescription(
-                    "Enable 20 days trade wind cycle between Al'Ankh trade wind and Emerald Trade wind. One of them will dominant the latitude between 30N-33N at each cycle. Above 33N, ENE and ESE follow the same 20-day cycle, starting with ENE.",
+                    "Enable a 20-day trade-wind cycle between the Al'Ankh and Emerald trade winds from 30N-33N, up to 7E longitude. During the Emerald cycle, 32N-33N has no trade wind as in vanilla. Above 33N, ENE and ESE follow the same cycle, starting with ENE. Each transition takes one in-game day.",
                     null,
                     new ConfigurationManagerAttributes
                     {
@@ -280,21 +289,29 @@ namespace ChaoticWind
                 return;
             }
 
-            if (!TryGetPlayerLatitude(out float latitude) ||
-                latitude < 30f)
+            int sample = TradeWindCycle.GetRetargetSample(
+                GetCurrentAbsoluteDay());
+            if (lastTradeWindRetargetSample == int.MinValue)
             {
-                lastTradeWindRetargetSample = int.MinValue;
+                lastTradeWindRetargetSample = sample;
                 return;
             }
 
-            int sample = TradeWindCycle.GetRetargetSample(
-                GetCurrentAbsoluteDay());
             if (sample == lastTradeWindRetargetSample)
             {
                 return;
             }
 
             lastTradeWindRetargetSample = sample;
+            if (!TryGetPlayerCoordinates(
+                    out float longitude,
+                    out float latitude) ||
+                GetSimpleTradeWindArea(longitude, latitude) ==
+                    SimpleTradeWindArea.None)
+            {
+                return;
+            }
+
             RequestTradeWindRetarget();
         }
 
@@ -531,9 +548,6 @@ namespace ChaoticWind
                 capturedFinalLerpSpeed = wind.finalLerpSpeed;
                 hasCapturedFinalLerpSpeed = true;
                 finalLerpOverrideApplied = false;
-                capturedTradeWindInfluence = wind.tradeWindInfluence;
-                capturedMinimumMagnitude = wind.minimumMagnitude;
-                hasCapturedTradeWindDefaults = true;
             }
 
             wind.changeTimer = windChangeTimer.Value;
@@ -586,7 +600,6 @@ namespace ChaoticWind
 
             if (TradeWindDisabled)
             {
-                RestoreTradeWindFields(wind);
                 return true;
             }
 
@@ -595,25 +608,67 @@ namespace ChaoticWind
                 return false;
             }
 
-            if (!TryGetPlayerLatitude(out float latitude))
+            if (!TryGetPlayerCoordinates(
+                    out float longitude,
+                    out float latitude))
             {
                 return false;
             }
 
-            if (latitude < 30f)
+            SimpleTradeWindArea area = GetSimpleTradeWindArea(
+                longitude,
+                latitude);
+            if (area == SimpleTradeWindArea.None)
             {
                 return false;
             }
 
             float absoluteDay = GetCurrentAbsoluteDay();
-            result = latitude > 33f
-                ? TradeWindCycle.GetNorthernDirection(absoluteDay)
-                : TradeWindCycle.GetMidLatitudeDirection(absoluteDay);
+            switch (area)
+            {
+                case SimpleTradeWindArea.MidLatitude:
+                    result = TradeWindCycle.GetMidLatitudeDirection(
+                        absoluteDay);
+                    break;
+
+                case SimpleTradeWindArea.UpperMidLatitude:
+                    result = TradeWindCycle.GetUpperMidLatitudeDirection(
+                        absoluteDay);
+                    break;
+
+                default:
+                    result = TradeWindCycle.GetNorthernDirection(
+                        absoluteDay);
+                    break;
+            }
             return true;
         }
 
-        private static bool TryGetPlayerLatitude(out float latitude)
+        private static SimpleTradeWindArea GetSimpleTradeWindArea(
+            float longitude,
+            float latitude)
         {
+            if (latitude > MidCycleNorthLatitude)
+            {
+                return SimpleTradeWindArea.Northern;
+            }
+
+            if (latitude < MidCycleSouthLatitude ||
+                longitude > MidCycleEastLongitudeLimit)
+            {
+                return SimpleTradeWindArea.None;
+            }
+
+            return latitude >= MidCycleCalmLatitude
+                ? SimpleTradeWindArea.UpperMidLatitude
+                : SimpleTradeWindArea.MidLatitude;
+        }
+
+        private static bool TryGetPlayerCoordinates(
+            out float longitude,
+            out float latitude)
+        {
+            longitude = 0f;
             latitude = 0f;
             if (FloatingOriginManager.instance == null ||
                 Refs.observerMirror == null)
@@ -621,20 +676,12 @@ namespace ChaoticWind
                 return false;
             }
 
-            latitude = FloatingOriginManager.instance.GetGlobeCoords(
-                Refs.observerMirror.transform).z;
+            Vector3 coordinates =
+                FloatingOriginManager.instance.GetGlobeCoords(
+                    Refs.observerMirror.transform);
+            longitude = coordinates.x;
+            latitude = coordinates.z;
             return true;
-        }
-
-        private void RestoreTradeWindFields(Wind wind)
-        {
-            if (!hasCapturedTradeWindDefaults || wind != trackedWind)
-            {
-                return;
-            }
-
-            wind.tradeWindInfluence = capturedTradeWindInfluence;
-            wind.minimumMagnitude = capturedMinimumMagnitude;
         }
 
         private static float GetCurrentAbsoluteDay()

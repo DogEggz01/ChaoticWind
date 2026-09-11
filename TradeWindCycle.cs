@@ -33,6 +33,37 @@ namespace ChaoticWind
                 EastSouthEast);
         }
 
+        internal static Vector3 GetUpperMidLatitudeDirection(float absoluteDay)
+        {
+            absoluteDay = Mathf.Max(0f, absoluteDay);
+
+            if (absoluteDay < PhaseLengthDays)
+            {
+                return NorthEast;
+            }
+
+            int phase = Mathf.FloorToInt(absoluteDay / PhaseLengthDays);
+            float dayWithinPhase = absoluteDay - phase * PhaseLengthDays;
+            bool targetIsNorthEast = phase % 2 == 0;
+            Vector3 target = targetIsNorthEast
+                ? NorthEast
+                : Vector3.zero;
+
+            if (dayWithinPhase >= TransitionLengthDays)
+            {
+                return target;
+            }
+
+            Vector3 previous = targetIsNorthEast
+                ? Vector3.zero
+                : NorthEast;
+            float transition = Mathf.SmoothStep(
+                0f,
+                1f,
+                dayWithinPhase / TransitionLengthDays);
+            return Vector3.Lerp(previous, target, transition);
+        }
+
         private static Vector3 GetAlternatingDirection(
             float absoluteDay,
             Vector3 initialDirection,
