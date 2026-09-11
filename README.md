@@ -27,6 +27,9 @@ For people want all trade wind cycle: Install **1.4.1**
 - **Open ocean + Storm bonus cap**: Vanilla default at 20, means Open Ocean bonus + storm wind will generate maximum 20 knots of speed as bonus.
 ## Simple Trade Wind Cycle
 - latitude 30-33 will be dominant only by either Al'Ankh trade wind, or Emerald trade wind.
+  - When Emerald trade wind is dominant, 32-33N will become tradewindless like Vanilla.
+- AA/EA trade wind cycle will stop at 7E Longtitude. East of 7E remain vanilla.
+  - So return from Chronos will always be possible
 - It will start with Al'Ankh Tradewind. Every 20 days it will change to another one. There will be a 1 day transition period.
 - Aestrin Trade wind will be change from vanilla WSW to WNW every 20 days also.
   - 0-19 day: AA wind, Aestrin WSW wind
