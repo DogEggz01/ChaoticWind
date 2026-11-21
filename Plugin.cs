@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Reflection.Emit;
 using BepInEx;
 using BepInEx.Bootstrap;
 using BepInEx.Configuration;
@@ -63,12 +64,18 @@ namespace ChaoticWind
 
         private static readonly FieldInfo RegionBlenderTargetRegionField =
             AccessTools.Field(typeof(RegionBlender), "currentTargetRegion");
+        private static readonly FieldInfo TrackerUpdatingField =
+            AccessTools.Field(typeof(IslandDistanceTracker), "updating");
         private static readonly MethodInfo WindSetNewGustTargetMethod =
             AccessTools.Method(typeof(Wind), "SetNewGustTarget");
 
+        // Climate's "Enable Custom Winds" entry, looked up on the first check in play.
+        private static ConfigEntry<bool> climateCustomWinds;
+        private static bool climateLookedUp;
+
         public const string PluginGuid = "com.pete.sailwind.windconfigurator";
         public const string PluginName = "Chaotic Wind";
-        public const string PluginVersion = "1.4.2";
+        public const string PluginVersion = "1.4.4";
         public const string BorderExpanderGuid = "com.nandbrew.borderexpander";
         public const string ClimatePluginGuid = "com.raddude.climate";
 
@@ -100,10 +107,9 @@ namespace ChaoticWind
         private Wind trackedWind;
         private float capturedWindChangeTimer;
         private float capturedFinalLerpSpeed;
-        private bool hasCapturedFinalLerpSpeed;
         private bool finalLerpOverrideApplied;
         private int lastTradeWindRetargetSample = int.MinValue;
-        private bool pendingTradeWindRetarget;
+        private bool pendingWindRetarget;
 
         public static ChaoticWindPlugin Instance { get; private set; }
         public ConfigEntry<bool> EnableTradeWind { get; private set; }
@@ -112,11 +118,6 @@ namespace ChaoticWind
         public bool TradeWindEnabled
         {
             get { return EnableTradeWind == null || EnableTradeWind.Value; }
-        }
-
-        public bool TradeWindDisabled
-        {
-            get { return !TradeWindEnabled; }
         }
 
         public bool TradeWindCycleEnabled
@@ -129,11 +130,6 @@ namespace ChaoticWind
             }
         }
 
-        public bool TradeWindOverrideActive
-        {
-            get { return TradeWindDisabled && !ClimateCustomWindsActive(); }
-        }
-
         private void Awake()
         {
             Instance = this;
@@ -144,6 +140,12 @@ namespace ChaoticWind
             harmony.PatchAll(Assembly.GetExecutingAssembly());
             ClimateCompatibility.Install(harmony);
 
+            if (TrackerUpdatingField == null)
+            {
+                Logger.LogError(
+                    "IslandDistanceTracker.updating was not found; the wind does not wait for a new land distance after a load.");
+            }
+
             ApplyRuntimeSettings();
             Logger.LogInfo($"{PluginName} {PluginVersion} loaded.");
         }
@@ -151,12 +153,13 @@ namespace ChaoticWind
         private void OnDestroy()
         {
             UnsubscribeFromConfiguration();
-            pendingTradeWindRetarget = false;
+            pendingWindRetarget = false;
+            LandDistance.Wait = LandDistanceWait.None;
 
             if (trackedWind != null)
             {
                 trackedWind.changeTimer = capturedWindChangeTimer;
-                if (finalLerpOverrideApplied && hasCapturedFinalLerpSpeed)
+                if (finalLerpOverrideApplied)
                 {
                     trackedWind.finalLerpSpeed = capturedFinalLerpSpeed;
                 }
@@ -173,6 +176,7 @@ namespace ChaoticWind
         private void Update()
         {
             UpdateTradeWindRetargeting();
+            UpdateLandDistanceWait();
         }
 
         private void BindConfiguration()
@@ -276,14 +280,11 @@ namespace ChaoticWind
 
         private void UpdateTradeWindRetargeting()
         {
-            Wind wind = Wind.instance;
-            if (!GameState.playing || wind == null || Sun.sun == null)
-            {
-                lastTradeWindRetargetSample = int.MinValue;
-                return;
-            }
-
-            if (ClimateCustomWindsActive() || !TradeWindCycleEnabled)
+            if (!TradeWindCycleEnabled ||
+                !GameState.playing ||
+                Wind.instance == null ||
+                Sun.sun == null ||
+                ClimateCustomWindsActive())
             {
                 lastTradeWindRetargetSample = int.MinValue;
                 return;
@@ -312,28 +313,63 @@ namespace ChaoticWind
                 return;
             }
 
-            RequestTradeWindRetarget();
+            RequestWindRetarget();
         }
 
-        private void RequestTradeWindRetarget()
+        internal static void BeginLandDistanceWait()
+        {
+            if (TrackerUpdatingField != null)
+            {
+                LandDistance.Wait = LandDistanceWait.Player;
+            }
+        }
+
+        private void UpdateLandDistanceWait()
+        {
+            if (LandDistance.Wait == LandDistanceWait.None)
+            {
+                return;
+            }
+
+            IslandDistanceTracker tracker = IslandDistanceTracker.instance;
+            PlayerControllerMirror observer = Refs.observerMirror;
+            if (tracker == null || observer == null)
+            {
+                return;
+            }
+
+            LandDistance.Wait = LandDistance.Advance(
+                LandDistance.Wait,
+                GameState.playing && observer.enabled,
+                true.Equals(TrackerUpdatingField.GetValue(tracker)));
+
+            // The wind targets set during the wait left out the ocean bonus.
+            if (LandDistance.Wait == LandDistanceWait.None &&
+                LandDistance.HasOceanBonus(GameState.distanceToLand))
+            {
+                RequestWindRetarget();
+            }
+        }
+
+        private void RequestWindRetarget()
         {
             if (Wind.instance == null)
             {
                 return;
             }
 
-            pendingTradeWindRetarget = true;
+            pendingWindRetarget = true;
             Wind.instance.debugChangeWind = true;
         }
 
-        internal void CompleteRequestedTradeWindRetarget(Wind wind)
+        internal void CompleteRequestedWindRetarget(Wind wind)
         {
-            if (!pendingTradeWindRetarget || wind != Wind.instance)
+            if (!pendingWindRetarget || wind != Wind.instance)
             {
                 return;
             }
 
-            pendingTradeWindRetarget = false;
+            pendingWindRetarget = false;
             try
             {
                 WindSetNewGustTargetMethod?.Invoke(wind, null);
@@ -341,7 +377,7 @@ namespace ChaoticWind
             catch (Exception exception)
             {
                 LogFeatureError(
-                    "Could not refresh the gust target after a trade-wind transition update: " +
+                    "Could not refresh the gust target after a requested wind retarget: " +
                     exception);
             }
         }
@@ -435,7 +471,7 @@ namespace ChaoticWind
                 Wind.instance != null)
             {
                 lastTradeWindRetargetSample = int.MinValue;
-                RequestTradeWindRetarget();
+                RequestWindRetarget();
             }
             TrackAndApplyWind(Wind.instance);
         }
@@ -541,12 +577,11 @@ namespace ChaoticWind
 
             if (trackedWind != wind)
             {
-                pendingTradeWindRetarget = false;
+                pendingWindRetarget = false;
                 lastTradeWindRetargetSample = int.MinValue;
                 trackedWind = wind;
                 capturedWindChangeTimer = wind.changeTimer;
                 capturedFinalLerpSpeed = wind.finalLerpSpeed;
-                hasCapturedFinalLerpSpeed = true;
                 finalLerpOverrideApplied = false;
             }
 
@@ -557,7 +592,7 @@ namespace ChaoticWind
                 wind.finalLerpSpeed = finalLerpSpeed.Value;
                 finalLerpOverrideApplied = true;
             }
-            else if (finalLerpOverrideApplied && hasCapturedFinalLerpSpeed)
+            else if (finalLerpOverrideApplied)
             {
                 wind.finalLerpSpeed = capturedFinalLerpSpeed;
                 finalLerpOverrideApplied = false;
@@ -569,27 +604,12 @@ namespace ChaoticWind
             Logger.LogInfo(message);
         }
 
-        internal void LogFeatureWarning(string message)
-        {
-            Logger.LogWarning(message);
-        }
-
         internal void LogFeatureError(string message)
         {
             Logger.LogError(message);
         }
 
-        public void EnforceTradeWindOverride(Wind wind, ref Vector3 result)
-        {
-            if (TryGetTradeWindOverride(wind, out Vector3 configuredResult))
-            {
-                result = configuredResult;
-            }
-        }
-
-        internal bool TryGetTradeWindOverride(
-            Wind wind,
-            out Vector3 result)
+        internal bool TryGetTradeWindOverride(out Vector3 result)
         {
             result = Vector3.zero;
 
@@ -598,7 +618,7 @@ namespace ChaoticWind
                 return false;
             }
 
-            if (TradeWindDisabled)
+            if (!TradeWindEnabled)
             {
                 return true;
             }
@@ -697,6 +717,11 @@ namespace ChaoticWind
             float originalMaximum,
             float distance)
         {
+            if (!LandDistance.IsKnown(distance))
+            {
+                return 0f;
+            }
+
             ChaoticWindPlugin plugin = Instance;
             if (plugin == null || !plugin.additionalOceanScaling.Value)
             {
@@ -711,6 +736,16 @@ namespace ChaoticWind
                     Mathf.InverseLerp(4000f, 72000f, distance));
         }
 
+        internal static float GetClimateOceanLerp(
+            float originalMinimum,
+            float originalMaximum,
+            float distance)
+        {
+            return LandDistance.IsKnown(distance)
+                ? Mathf.InverseLerp(originalMinimum, originalMaximum, distance)
+                : 0f;
+        }
+
         internal static float GetConfiguredBonusCap()
         {
             return Instance == null
@@ -720,45 +755,54 @@ namespace ChaoticWind
 
         internal static bool ClimateCustomWindsActive()
         {
-            if (!GameState.playing ||
-                !Chainloader.PluginInfos.TryGetValue(ClimatePluginGuid, out PluginInfo climate) ||
-                climate.Instance == null)
+            if (!GameState.playing)
             {
                 return false;
             }
 
-            return climate.Instance.Config.TryGetEntry(
-                       "Settings",
-                       "Enable Custom Winds",
-                       out ConfigEntry<bool> enabled) &&
-                   enabled.Value;
+            // Every plugin has loaded by the time the game is playing.
+            if (!climateLookedUp)
+            {
+                climateLookedUp = true;
+                if (Chainloader.PluginInfos.TryGetValue(ClimatePluginGuid, out PluginInfo climate) &&
+                    climate.Instance != null)
+                {
+                    climate.Instance.Config.TryGetEntry(
+                        "Settings",
+                        "Enable Custom Winds",
+                        out climateCustomWinds);
+                }
+            }
+
+            return climateCustomWinds != null && climateCustomWinds.Value;
         }
     }
 
     [HarmonyPatch(typeof(Wind), "GetCurrentTradeWind")]
     internal static class GetCurrentTradeWindPatch
     {
-        [HarmonyPrefix]
-        [HarmonyPriority(Priority.High)]
-        [HarmonyBefore(new[] { ChaoticWindPlugin.BorderExpanderGuid })]
-        private static bool Prefix(Wind __instance, ref Vector3 __result)
-        {
-            ChaoticWindPlugin plugin = ChaoticWindPlugin.Instance;
-            if (plugin == null ||
-                !plugin.TryGetTradeWindOverride(__instance, out Vector3 result))
-            {
-                return true;
-            }
-
-            __result = result;
-            return false;
-        }
-
+        // Set in a postfix: the prefixes of Border Expander and Climate that
+        // replace the game's trade wind run whatever another prefix returns.
         [HarmonyPostfix]
         [HarmonyAfter(new[] { ChaoticWindPlugin.BorderExpanderGuid })]
-        private static void Postfix(Wind __instance, ref Vector3 __result)
+        private static void Postfix(ref Vector3 __result)
         {
-            ChaoticWindPlugin.Instance?.EnforceTradeWindOverride(__instance, ref __result);
+            ChaoticWindPlugin plugin = ChaoticWindPlugin.Instance;
+            if (plugin != null &&
+                plugin.TryGetTradeWindOverride(out Vector3 result))
+            {
+                __result = result;
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(SaveLoadManager), "LoadGame")]
+    internal static class LoadGamePatch
+    {
+        [HarmonyPrefix]
+        private static void Prefix()
+        {
+            ChaoticWindPlugin.BeginLandDistanceWait();
         }
     }
 
@@ -786,7 +830,7 @@ namespace ChaoticWind
         [HarmonyPostfix]
         private static void Postfix(Wind __instance)
         {
-            ChaoticWindPlugin.Instance?.CompleteRequestedTradeWindRetarget(
+            ChaoticWindPlugin.Instance?.CompleteRequestedWindRetarget(
                 __instance);
         }
 
@@ -808,6 +852,399 @@ namespace ChaoticWind
         {
             ChaoticWindPlugin.Instance?.ApplyRegionSettings();
             ChaoticWindPlugin.Instance?.ApplyActiveRegionChaos();
+        }
+    }
+
+    internal static class TradeWindCycle
+    {
+        internal const float PhaseLengthDays = 20f;
+        internal const float TransitionLengthDays = 1f;
+        internal const int TransitionRetargetSteps = 20;
+
+        private static readonly Vector3 NorthEast =
+            new Vector3(0.75f, 0f, 0.75f).normalized;
+        private static readonly Vector3 SouthWest =
+            new Vector3(-1f, 0f, -0.5f).normalized;
+        private static readonly Vector3 EastNorthEast =
+            new Vector3(1f, 0f, 0.5f).normalized;
+        private static readonly Vector3 EastSouthEast =
+            new Vector3(1f, 0f, -0.5f).normalized;
+
+        internal static Vector3 GetMidLatitudeDirection(float absoluteDay)
+        {
+            return GetAlternatingDirection(
+                absoluteDay,
+                NorthEast,
+                SouthWest);
+        }
+
+        internal static Vector3 GetNorthernDirection(float absoluteDay)
+        {
+            return GetAlternatingDirection(
+                absoluteDay,
+                EastNorthEast,
+                EastSouthEast);
+        }
+
+        internal static Vector3 GetUpperMidLatitudeDirection(float absoluteDay)
+        {
+            absoluteDay = Mathf.Max(0f, absoluteDay);
+
+            if (absoluteDay < PhaseLengthDays)
+            {
+                return NorthEast;
+            }
+
+            int phase = Mathf.FloorToInt(absoluteDay / PhaseLengthDays);
+            float dayWithinPhase = absoluteDay - phase * PhaseLengthDays;
+            bool targetIsNorthEast = phase % 2 == 0;
+            Vector3 target = targetIsNorthEast
+                ? NorthEast
+                : Vector3.zero;
+
+            if (dayWithinPhase >= TransitionLengthDays)
+            {
+                return target;
+            }
+
+            Vector3 previous = targetIsNorthEast
+                ? Vector3.zero
+                : NorthEast;
+            float transition = Mathf.SmoothStep(
+                0f,
+                1f,
+                dayWithinPhase / TransitionLengthDays);
+            return Vector3.Lerp(previous, target, transition);
+        }
+
+        private static Vector3 GetAlternatingDirection(
+            float absoluteDay,
+            Vector3 initialDirection,
+            Vector3 alternateDirection)
+        {
+            absoluteDay = Mathf.Max(0f, absoluteDay);
+
+            // The initial direction is dominant from days 0 through 19.
+            if (absoluteDay < PhaseLengthDays)
+            {
+                return initialDirection;
+            }
+
+            int phase = Mathf.FloorToInt(absoluteDay / PhaseLengthDays);
+            float dayWithinPhase = absoluteDay - phase * PhaseLengthDays;
+            bool targetIsInitialDirection = phase % 2 == 0;
+
+            Vector3 target = targetIsInitialDirection
+                ? initialDirection
+                : alternateDirection;
+            if (dayWithinPhase >= TransitionLengthDays)
+            {
+                return target;
+            }
+
+            Vector3 previous = targetIsInitialDirection
+                ? alternateDirection
+                : initialDirection;
+            float transition = Mathf.SmoothStep(
+                0f,
+                1f,
+                dayWithinPhase / TransitionLengthDays);
+            return Vector3.Slerp(previous, target, transition).normalized;
+        }
+
+        internal static int GetRetargetSample(float absoluteDay)
+        {
+            absoluteDay = Mathf.Max(0f, absoluteDay);
+
+            if (absoluteDay < PhaseLengthDays)
+            {
+                return TransitionRetargetSteps;
+            }
+
+            int phase = Mathf.FloorToInt(absoluteDay / PhaseLengthDays);
+            float dayWithinPhase = absoluteDay - phase * PhaseLengthDays;
+            int state = TransitionRetargetSteps;
+
+            if (dayWithinPhase < TransitionLengthDays)
+            {
+                float progress = Mathf.Clamp01(
+                    dayWithinPhase / TransitionLengthDays);
+                state = Mathf.Min(
+                    Mathf.FloorToInt(progress * TransitionRetargetSteps),
+                    TransitionRetargetSteps - 1);
+            }
+
+            return phase * (TransitionRetargetSteps + 1) + state;
+        }
+    }
+
+    // GameState.distanceToLand is not always the player's distance:
+    // SaveLoadManager.LoadGame ends by setting 999999, IslandDistanceTracker
+    // starts each search at 100000000, and a search begun before the observer
+    // follows the loaded player measures from the start menu's place. Read as
+    // the player's, they add or drop the open-ocean wind bonus right after a
+    // load.
+    internal static class LandDistance
+    {
+        internal const float PlaceholderMinimum = 999999f;
+        internal const float OceanBonusStart = 1500f;
+
+        // What the wind still waits for after a load before it reads the
+        // distance again.
+        internal static LandDistanceWait Wait;
+
+        internal static bool IsKnown(float distance)
+        {
+            return Wait == LandDistanceWait.None && distance < PlaceholderMinimum;
+        }
+
+        internal static bool HasOceanBonus(float distance)
+        {
+            return distance > OceanBonusStart;
+        }
+
+        // One frame of the wait. playerPlaced: the game is playing and the
+        // observer follows the player. trackerBusy: IslandDistanceTracker is
+        // in a search. The wait ends with the first search begun after the
+        // frame the player was placed in.
+        internal static LandDistanceWait Advance(
+            LandDistanceWait wait,
+            bool playerPlaced,
+            bool trackerBusy)
+        {
+            switch (wait)
+            {
+                case LandDistanceWait.Player:
+                    return playerPlaced ? LandDistanceWait.TrackerIdle : wait;
+
+                case LandDistanceWait.TrackerIdle:
+                    return trackerBusy ? wait : LandDistanceWait.SearchStart;
+
+                case LandDistanceWait.SearchStart:
+                    return trackerBusy ? LandDistanceWait.SearchEnd : wait;
+
+                case LandDistanceWait.SearchEnd:
+                    return trackerBusy ? wait : LandDistanceWait.None;
+
+                default:
+                    return LandDistanceWait.None;
+            }
+        }
+    }
+
+    internal enum LandDistanceWait
+    {
+        None,
+        Player,
+        TrackerIdle,
+        SearchStart,
+        SearchEnd
+    }
+
+    internal static class ClimateCompatibility
+    {
+        internal static void Install(Harmony harmony)
+        {
+            if (!Chainloader.PluginInfos.TryGetValue(
+                    ChaoticWindPlugin.ClimatePluginGuid,
+                    out PluginInfo climate) ||
+                climate.Instance == null)
+            {
+                return;
+            }
+
+            Type patchType = AccessTools.TypeByName(
+                "Climate.WeatherPatches+ReplaceWindPatches");
+            MethodInfo target = AccessTools.Method(patchType, "SetNewWindTarget");
+            if (target == null)
+            {
+                ChaoticWindPlugin.Instance?.LogFeatureError(
+                    "Climate wind prefix was not found; Climate bonus-cap override and land-distance guard are unavailable.");
+                return;
+            }
+
+            try
+            {
+                harmony.Patch(
+                    target,
+                    transpiler: new HarmonyMethod(
+                        typeof(ClimateCompatibility),
+                        nameof(Transpiler))
+                    {
+                        priority = Priority.Last,
+                    });
+                ChaoticWindPlugin.Instance?.LogFeatureInfo(
+                    "Installed Climate custom-wind bonus-cap and land-distance compatibility.");
+            }
+            catch (Exception exception)
+            {
+                ChaoticWindPlugin.Instance?.LogFeatureError(
+                    "Climate wind compatibility could not be installed: " + exception);
+            }
+        }
+
+        private static IEnumerable<CodeInstruction> Transpiler(
+            IEnumerable<CodeInstruction> instructions)
+        {
+            return WindIlRewriter.RewriteClimate(instructions);
+        }
+    }
+
+    internal static class WindIlRewriter
+    {
+        private static readonly MethodInfo InverseLerp = AccessTools.Method(
+            typeof(Mathf),
+            nameof(Mathf.InverseLerp),
+            new[] { typeof(float), typeof(float), typeof(float) });
+
+        private static readonly FieldInfo DistanceToLand = AccessTools.Field(
+            typeof(GameState),
+            nameof(GameState.distanceToLand));
+
+        private static readonly MethodInfo OceanLerpHelper = AccessTools.Method(
+            typeof(ChaoticWindPlugin),
+            nameof(ChaoticWindPlugin.GetConfiguredOceanLerp));
+
+        private static readonly MethodInfo ClimateOceanLerpHelper = AccessTools.Method(
+            typeof(ChaoticWindPlugin),
+            nameof(ChaoticWindPlugin.GetClimateOceanLerp));
+
+        private static readonly MethodInfo BonusCapHelper = AccessTools.Method(
+            typeof(ChaoticWindPlugin),
+            nameof(ChaoticWindPlugin.GetConfiguredBonusCap));
+
+        internal static IEnumerable<CodeInstruction> RewriteVanilla(
+            IEnumerable<CodeInstruction> instructions)
+        {
+            List<CodeInstruction> code = new List<CodeInstruction>(instructions);
+            List<int> oceanCalls = FindInverseLerpCalls(
+                code,
+                1500f,
+                4000f,
+                DistanceToLand);
+            List<int> capLoads = FindFloatLoads(code, 20f);
+
+            if (oceanCalls.Count != 1 || capLoads.Count != 2)
+            {
+                LogPatternError(
+                    "vanilla Wind.SetNewWindTarget",
+                    oceanCalls.Count,
+                    capLoads.Count,
+                    "The method was left unchanged.");
+                return code;
+            }
+
+            code[oceanCalls[0]].operand = OceanLerpHelper;
+            ReplaceLoadsWithCall(code, capLoads, BonusCapHelper);
+            return code;
+        }
+
+        internal static IEnumerable<CodeInstruction> RewriteClimate(
+            IEnumerable<CodeInstruction> instructions)
+        {
+            List<CodeInstruction> code = new List<CodeInstruction>(instructions);
+            List<int> oceanCalls = FindInverseLerpCalls(
+                code,
+                1500f,
+                4000f,
+                DistanceToLand);
+            List<int> capLoads = FindFloatLoads(code, 20f);
+
+            // Climate 1.5 caps with Mathf.Min (one literal), Climate 1.4 with a
+            // comparison and an assignment (two).
+            bool oceanMatches = oceanCalls.Count == 1;
+            bool capMatches = capLoads.Count == 1 || capLoads.Count == 2;
+            if (!oceanMatches || !capMatches)
+            {
+                LogPatternError(
+                    "Climate custom-wind prefix",
+                    oceanCalls.Count,
+                    capLoads.Count,
+                    "Only the matching parts were changed.");
+            }
+
+            if (oceanMatches)
+            {
+                code[oceanCalls[0]].operand = ClimateOceanLerpHelper;
+            }
+
+            if (capMatches)
+            {
+                ReplaceLoadsWithCall(code, capLoads, BonusCapHelper);
+            }
+
+            return code;
+        }
+
+        private static List<int> FindInverseLerpCalls(
+            List<CodeInstruction> code,
+            float minimum,
+            float maximum,
+            FieldInfo valueField)
+        {
+            List<int> matches = new List<int>();
+            for (int i = 3; i < code.Count; i++)
+            {
+                if (Equals(code[i].operand, InverseLerp) &&
+                    LoadsFloat(code[i - 3], minimum) &&
+                    LoadsFloat(code[i - 2], maximum) &&
+                    code[i - 1].opcode == OpCodes.Ldsfld &&
+                    Equals(code[i - 1].operand, valueField))
+                {
+                    matches.Add(i);
+                }
+            }
+
+            return matches;
+        }
+
+        private static List<int> FindFloatLoads(
+            List<CodeInstruction> code,
+            float value)
+        {
+            List<int> matches = new List<int>();
+            for (int i = 0; i < code.Count; i++)
+            {
+                if (LoadsFloat(code[i], value))
+                {
+                    matches.Add(i);
+                }
+            }
+
+            return matches;
+        }
+
+        private static void ReplaceLoadsWithCall(
+            List<CodeInstruction> code,
+            List<int> indexes,
+            MethodInfo helper)
+        {
+            for (int i = 0; i < indexes.Count; i++)
+            {
+                int index = indexes[i];
+                CodeInstruction original = code[index];
+                CodeInstruction replacement = new CodeInstruction(OpCodes.Call, helper);
+                replacement.labels.AddRange(original.labels);
+                replacement.blocks.AddRange(original.blocks);
+                code[index] = replacement;
+            }
+        }
+
+        private static bool LoadsFloat(CodeInstruction instruction, float value)
+        {
+            return instruction.opcode == OpCodes.Ldc_R4 &&
+                instruction.operand is float loadedValue &&
+                loadedValue == value;
+        }
+
+        private static void LogPatternError(
+            string target,
+            int oceanCount,
+            int capCount,
+            string outcome)
+        {
+            ChaoticWindPlugin.Instance?.LogFeatureError(
+                $"Wind IL pattern mismatch in {target}, ocean curves={oceanCount}, cap loads={capCount}. {outcome}");
         }
     }
 }
